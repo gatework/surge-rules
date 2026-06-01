@@ -1,8 +1,15 @@
 name: Generate routing rules for Surge
 permissions:
   contents: write
+
 on:
   workflow_dispatch:
+    inputs:
+      publish:
+        description: 上传结果到 release 分支，并触发 jsDelivr purge
+        required: false
+        type: boolean
+        default: true
   schedule:
     - cron: "30 22 * * *"
   push:
@@ -10,115 +17,44 @@ on:
       - master
     paths-ignore:
       - "**/README.md"
+
+concurrency:
+  group: surge-rules-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TZ: Asia/Shanghai
+
+defaults:
+  run:
+    shell: bash
+
 jobs:
   build:
     name: Build
     runs-on: ubuntu-latest
     steps:
-      - name: Set variables
-        run: |
-          echo "RELEASE_NAME=Released on $(date +%Y%m%d%H%M)" >> $GITHUB_ENV
-          echo "TAG_NAME=$(date +%Y%m%d%H%M)" >> $GITHUB_ENV
-          echo "custom_icloud=https://raw.githubusercontent.com/Loyalsoldier/domain-list-custom/release/icloud.txt" >> $GITHUB_ENV
-          echo "custom_tld_not_cn=https://raw.githubusercontent.com/Loyalsoldier/domain-list-custom/release/tld-!cn.txt" >> $GITHUB_ENV
-          echo "custom_private=https://raw.githubusercontent.com/Loyalsoldier/domain-list-custom/release/private.txt" >> $GITHUB_ENV
-          echo "Loyalsoldier_reject=https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/reject-list.txt" >> $GITHUB_ENV
-          echo "Loyalsoldier_proxy=https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/proxy-list.txt" >> $GITHUB_ENV
-          echo "Loyalsoldier_direct=https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/direct-list.txt" >> $GITHUB_ENV
-          echo "Loyalsoldier_gfw=https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/gfw.txt" >> $GITHUB_ENV
-          echo "Loyalsoldier_greatfire=https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/greatfire.txt" >> $GITHUB_ENV
-          echo "felixonmars_apple=https://raw.githubusercontent.com/felixonmars/dnsmasq-china-list/master/apple.china.conf" >> $GITHUB_ENV
-          echo "felixonmars_google=https://raw.githubusercontent.com/felixonmars/dnsmasq-china-list/master/google.china.conf" >> $GITHUB_ENV
-          echo "cn_cidr=https://raw.githubusercontent.com/Loyalsoldier/geoip/release/text/cn.txt" >> $GITHUB_ENV
-          echo "telegram_cidr=https://raw.githubusercontent.com/Loyalsoldier/geoip/release/text/telegram.txt" >> $GITHUB_ENV
-        shell: bash
-
       - name: Checkout the default branch
         uses: actions/checkout@v6
 
-      - name: Make directory
+      - name: Set release metadata
         run: |
-          mkdir -p ruleset
+          echo "RELEASE_NAME=Released on $(date +'%Y-%m-%d %H:%M %Z')" >> "${GITHUB_ENV}"
+          echo "TAG_NAME=$(date +'%Y%m%d%H%M%S')" >> "${GITHUB_ENV}"
 
-      - name: Generate icloud.txt file
+      - name: Set runtime options
         run: |
-          curl -sSL ${custom_icloud} | grep -E "^full:" | awk -F ':' '{printf "%s\n", $2}' > icloud.txt
-          curl -sSL ${custom_icloud} | grep -E "^domain:" | awk -F ':' '{printf ".%s\n", $2}' >> icloud.txt
-          curl -sSL ${custom_icloud} | grep -E "^full:" | awk -F ':' '{printf "DOMAIN,%s\n", $2}' > ruleset/icloud.txt
-          curl -sSL ${custom_icloud} | grep -E "^domain:" | awk -F ':' '{printf "DOMAIN-SUFFIX,%s\n", $2}' >> ruleset/icloud.txt
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "PUBLISH_ASSETS=${{ github.event.inputs.publish }}" >> "${GITHUB_ENV}"
+          else
+            echo "PUBLISH_ASSETS=true" >> "${GITHUB_ENV}"
+          fi
 
-      - name: Generate google.txt file
-        run: |
-          curl -sSL ${felixonmars_google} | perl -ne '/^server=\/([^\/]+)\// && print ".$1\n"' > google.txt
-          curl -sSL ${felixonmars_google} | perl -ne '/^server=\/([^\/]+)\// && print "DOMAIN-SUFFIX,$1\n"' > ruleset/google.txt
-
-      - name: Generate apple.txt file
-        run: |
-          curl -sSL ${felixonmars_apple} | perl -ne '/^server=\/([^\/]+)\// && print ".$1\n"' > apple.txt
-          curl -sSL ${felixonmars_apple} | perl -ne '/^server=\/([^\/]+)\// && print "DOMAIN-SUFFIX,$1\n"' > ruleset/apple.txt
-
-      - name: Generate direct.txt file
-        run: |
-          curl -sSL ${Loyalsoldier_direct} | grep -Ev "^(regexp|keyword):" | perl -ne '/^(full:)([-_a-zA-Z0-9]+(\.[-_a-zA-Z0-9]+)*)/ && print "$2\n"' > direct.txt
-          curl -sSL ${Loyalsoldier_direct} | grep -Ev "^(regexp|keyword|full):" | perl -ne '/^(domain:)?([-_a-zA-Z0-9]+(\.[-_a-zA-Z0-9]+)*)/ && print ".$2\n"' >> direct.txt
-          curl -sSL ${Loyalsoldier_direct} | grep -Ev "^(regexp|keyword):" | perl -ne '/^(full:)([-_a-zA-Z0-9]+(\.[-_a-zA-Z0-9]+)*)/ && print "DOMAIN,$2\n"' > ruleset/direct.txt
-          curl -sSL ${Loyalsoldier_direct} | grep -Ev "^(regexp|keyword|full):" | perl -ne '/^(domain:)?([-_a-zA-Z0-9]+(\.[-_a-zA-Z0-9]+)*)/ && print "DOMAIN-SUFFIX,$2\n"' >> ruleset/direct.txt
-
-      - name: Generate proxy.txt file
-        run: |
-          curl -sSL ${Loyalsoldier_proxy} | grep -Ev "^(regexp|keyword):" | perl -ne '/^(full:)([-_a-zA-Z0-9]+(\.[-_a-zA-Z0-9]+)*)/ && print "$2\n"' > proxy.txt
-          curl -sSL ${Loyalsoldier_proxy} | grep -Ev "^(regexp|keyword|full):" | perl -ne '/^(domain:)?([-_a-zA-Z0-9]+(\.[-_a-zA-Z0-9]+)*)/ && print ".$2\n"' >> proxy.txt
-          curl -sSL ${Loyalsoldier_proxy} | grep -Ev "^(regexp|keyword):" | perl -ne '/^(full:)([-_a-zA-Z0-9]+(\.[-_a-zA-Z0-9]+)*)/ && print "DOMAIN,$2\n"' > ruleset/proxy.txt
-          curl -sSL ${Loyalsoldier_proxy} | grep -Ev "^(regexp|keyword|full):" | perl -ne '/^(domain:)?([-_a-zA-Z0-9]+(\.[-_a-zA-Z0-9]+)*)/ && print "DOMAIN-SUFFIX,$2\n"' >> ruleset/proxy.txt
-
-      - name: Generate reject.txt file
-        run: |
-          curl -sSL ${Loyalsoldier_reject} | grep -Ev "^(regexp|keyword):" | perl -ne '/^(domain:|full:)?([-_a-zA-Z0-9]+(\.[-_a-zA-Z0-9]+)*)/ && print ".$2\n"' > reject.txt
-          curl -sSL ${Loyalsoldier_reject} | grep -Ev "^(regexp|keyword):" | perl -ne '/^(domain:|full:)?([-_a-zA-Z0-9]+(\.[-_a-zA-Z0-9]+)*)/ && print "DOMAIN-SUFFIX,$2\n"' > ruleset/reject.txt
-
-      - name: Generate private.txt file
-        run: |
-          curl -sSL ${custom_private} | awk -F ':' '/^full:/ {printf "%s\n", $2}' > private.txt
-          curl -sSL ${custom_private} | awk -F ':' '/^domain:/ {printf ".%s\n", $2}' >> private.txt
-          curl -sSL ${custom_private} | awk -F ':' '/^full:/ {printf "DOMAIN,%s\n", $2}' > ruleset/private.txt
-          curl -sSL ${custom_private} | awk -F ':' '/^domain:/ {printf "DOMAIN-SUFFIX,%s\n", $2}' >> ruleset/private.txt
-
-      - name: Generate gfw.txt file
-        run: |
-          curl -sSL ${Loyalsoldier_gfw} | grep -Ev "^(regexp|keyword):" | perl -ne '/^(domain:|full:)?([-_a-zA-Z0-9]+(\.[-_a-zA-Z0-9]+)*)/ && print ".$2\n"' > gfw.txt
-          curl -sSL ${Loyalsoldier_gfw} | grep -Ev "^(regexp|keyword):" | perl -ne '/^(domain:|full:)?([-_a-zA-Z0-9]+(\.[-_a-zA-Z0-9]+)*)/ && print "DOMAIN-SUFFIX,$2\n"' > ruleset/gfw.txt
-
-      - name: Generate greatfire.txt file
-        run: |
-          curl -sSL ${Loyalsoldier_greatfire} | grep -Ev "^(regexp|keyword):" | perl -ne '/^(domain:|full:)?([-_a-zA-Z0-9]+(\.[-_a-zA-Z0-9]+)*)/ && print ".$2\n"' > greatfire.txt
-          curl -sSL ${Loyalsoldier_greatfire} | grep -Ev "^(regexp|keyword):" | perl -ne '/^(domain:|full:)?([-_a-zA-Z0-9]+(\.[-_a-zA-Z0-9]+)*)/ && print "DOMAIN-SUFFIX,$2\n"' > ruleset/greatfire.txt
-
-      - name: Generate tld-not-cn.txt file
-        run: |
-          curl -sSL ${custom_tld_not_cn} | grep -E "^domain:" | awk -F ':' '{printf ".%s\n", $2}' > tld-not-cn.txt
-          curl -sSL ${custom_tld_not_cn} | grep -E "^domain:" | awk -F ':' '{printf "DOMAIN-SUFFIX,%s\n", $2}' > ruleset/tld-not-cn.txt
-
-      - name: Generate cncidr.txt file
-        run: |
-          curl -sSL ${cn_cidr} | perl -ne '/^(\d{1,3}(\.\d{1,3}){3}\/\d{1,2})/ && print "IP-CIDR,$1\n"' > cncidr.txt
-          curl -sSL ${cn_cidr} | perl -ne '/^(\d{1,3}(\.\d{1,3}){3}\/\d{1,2})/ && print "IP-CIDR,$1\n"' > ruleset/cncidr.txt
-          curl -sSL ${cn_cidr} | grep ":" | perl -ne '/(.+\/\d+)/ && print "IP-CIDR6,$1\n"' >> cncidr.txt
-          curl -sSL ${cn_cidr} | grep ":" | perl -ne '/(.+\/\d+)/ && print "IP-CIDR6,$1\n"' >> ruleset/cncidr.txt
-
-      - name: Generate telegramcidr.txt file
-        run: |
-          curl -sSL ${telegram_cidr} | perl -ne '/^(\d{1,3}(\.\d{1,3}){3}\/\d{1,2})/ && print "IP-CIDR,$1\n"' > telegramcidr.txt
-          curl -sSL ${telegram_cidr} | perl -ne '/^(\d{1,3}(\.\d{1,3}){3}\/\d{1,2})/ && print "IP-CIDR,$1\n"' > ruleset/telegramcidr.txt
-          curl -sSL ${telegram_cidr} | grep ":" | perl -ne '/(.+\/\d+)/ && print "IP-CIDR6,$1\n"' >> telegramcidr.txt
-          curl -sSL ${telegram_cidr} | grep ":" | perl -ne '/(.+\/\d+)/ && print "IP-CIDR6,$1\n"' >> ruleset/telegramcidr.txt
-
-      - name: Move files to publish directory
-        run: |
-          mkdir -p publish
-          cp *.txt ./publish/
-          mv ruleset ./publish/
+      - name: Generate routing rules
+        run: bash .github/scripts/build-rules.sh
 
       - name: Release and upload assets
+        if: env.PUBLISH_ASSETS == 'true'
         uses: softprops/action-gh-release@v3
         with:
           name: ${{ env.RELEASE_NAME }}
@@ -126,28 +62,61 @@ jobs:
           draft: false
           prerelease: false
           files: |
-            ./publish/*
+            ./publish/*.txt
+            ./publish/ruleset/*.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Git push assets to "release" branch
+        if: env.PUBLISH_ASSETS == 'true'
         run: |
           cd publish || exit 1
-          git init
+          git init -b release
           git config --local user.name "github-actions[bot]"
           git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -b release
           git add .
           git commit -m "${{ env.RELEASE_NAME }}"
-          git remote add origin "https://${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}"
-          git push -f -u origin release
+          git remote add origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
+          remote_exists=1
+          if git ls-remote --exit-code --heads origin release > /dev/null 2>&1; then
+            git fetch --depth=1 origin release
+            if git diff --quiet HEAD "origin/release"; then
+              echo "No release asset changes detected, skip push to avoid duplicate commit."
+              exit 0
+            fi
+          else
+            remote_exists=0
+          fi
+          if [[ "${remote_exists}" -eq 1 ]]; then
+            git push --force-with-lease -u origin release
+          else
+            git push -u origin release
+          fi
 
       - name: Purge jsdelivr CDN
+        if: env.PUBLISH_ASSETS == 'true'
         run: |
-          cd publish || exit 1
-          for file in $(ls); do
-            curl -i "https://purge.jsdelivr.net/gh/${{ github.repository }}@release/${file}"
-          done
-          for file in $(ls ruleset); do
-            curl -i "https://purge.jsdelivr.net/gh/${{ github.repository }}@release/ruleset/${file}"
-          done
+          set -euo pipefail
+          failed=0
+          while IFS= read -r file; do
+            path="${file#publish/}"
+            if ! curl \
+              --retry-all-errors \
+              --connect-timeout 15 \
+              --max-time 20 \
+              --fail \
+              --location \
+              --silent \
+              --show-error \
+              --retry 3 \
+              --retry-delay 2 \
+              "https://purge.jsdelivr.net/gh/${{ github.repository }}@release/${path}" \
+              > /dev/null; then
+              echo "::warning::Purge request failed: ${path}"
+              failed=$((failed + 1))
+            fi
+          done < <(find publish -mindepth 1 -type f -name "*.txt" | sort)
+          if [[ "${failed}" -gt 0 ]]; then
+            echo "::error::jsDelivr purge had ${failed} failed request(s)."
+            exit 1
+          fi
